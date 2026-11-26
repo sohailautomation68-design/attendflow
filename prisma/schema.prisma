@@ -1,0 +1,317 @@
+// attendflow database schema.
+// Local development uses SQLite (zero setup). For production, change
+// provider to "postgresql" and set DATABASE_URL — see docs/DEPLOYMENT.md.
+//
+// MULTI-TENANCY RULE: every table that holds academy data has an academyId.
+// Every query in lib/data/* MUST filter by the academyId from the logged-in
+// session. Never accept an academyId from the browser.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Academy {
+  id                 String    @id @default(cuid())
+  name               String
+  active             Boolean   @default(true)     // Super Admin can suspend an academy
+  planCode           String    @default("STARTER") // see lib/plans.ts
+  subscriptionStatus String    @default("TRIAL")  // TRIAL | ACTIVE | SUSPENDED
+  trialEndsAt        DateTime?
+  createdAt          DateTime  @default(now())
+
+  users      User[]
+  classes    Class[]
+  students   Student[]
+  sessions   AttendanceSession[]
+  records    AttendanceRecord[]
+}
+
+model User {
+  id           String   @id @default(cuid())
+  academyId    String
+  email        String   @unique
+  name         String
+  passwordHash String
+  role         String   // "SUPER_ADMIN" | "ADMIN" | "TEACHER" | "STUDENT" | "GUARDIAN"
+  studentId    String?  // set for STUDENT accounts: the student this login belongs to
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  academy      Academy  @relation(fields: [academyId], references: [id], onDelete: Cascade)
+  taughtClasses Class[]  @relation("ClassTeacher")
+  markedSessions AttendanceSession[]
+
+  @@index([academyId])
+}
+
+model Class {
+  id         String   @id @default(cuid())
+  academyId  String
+  name       String
+  subject    String?
+  teacherId  String?
+  createdAt  DateTime @default(now())
+
+  academy    Academy  @relation(fields: [academyId], references: [id], onDelete: Cascade)
+  teacher    User?    @relation("ClassTeacher", fields: [teacherId], references: [id], onDelete: SetNull)
+  students   Student[]
+  sessions   AttendanceSession[]
+  enrollments Enrollment[]
+  timetable   TimetableEntry[]
+  cancelledDays CancelledDay[]
+  subjects    Subject[]
+
+  @@index([academyId])
+}
+
+model Student {
+  id          String   @id @default(cuid())
+  academyId   String
+  classId     String
+  fullName    String
+  rollNumber  String
+  guardianPhone String?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  academy     Academy  @relation(fields: [academyId], references: [id], onDelete: Cascade)
+  class       Class    @relation(fields: [classId], references: [id], onDelete: Cascade)
+  records     AttendanceRecord[]
+  enrollments Enrollment[]
+  absenceAlerts AbsenceAlert[]
+
+  @@unique([classId, rollNumber])
+  @@index([academyId])
+}
+
+model AttendanceSession {
+  id          String   @id @default(cuid())
+  academyId   String
+  classId     String
+  date        String   // "YYYY-MM-DD" (academy local date, stored as text to avoid timezone drift)
+  subjectId   String   @default("") // "" = whole class; otherwise a Subject id
+  markedById  String
+  status      String   @default("SUBMITTED") // "SUBMITTED" once saved; drafts live on the device
+  submittedAt DateTime?  // set on first save; the 48h teacher edit window counts from here
+  updatedAt   DateTime @updatedAt
+  createdAt   DateTime @default(now())
+
+  academy     Academy  @relation(fields: [academyId], references: [id], onDelete: Cascade)
+  class       Class    @relation(fields: [classId], references: [id], onDelete: Cascade)
+  markedBy    User     @relation(fields: [markedById], references: [id])
+  records     AttendanceRecord[]
+
+  @@unique([classId, date, subjectId])
+  @@index([academyId])
+}
+
+model AttendanceRecord {
+  id          String   @id @default(cuid())
+  academyId   String
+  sessionId   String
+  studentId   String
+  status      String   // "PRESENT" | "ABSENT" | "LATE" | "LEAVE"
+  updatedAt   DateTime @updatedAt
+
+  academy     Academy  @relation(fields: [academyId], references: [id], onDelete: Cascade)
+  session     AttendanceSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  student     Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, studentId])
+  @@index([academyId])
+}
+
+// Enrollment history: one row per period a student belonged to a class.
+// endDate is null while the student is still in that class.
+model Enrollment {
+  id         String   @id @default(cuid())
+  academyId  String
+  studentId  String
+  classId    String
+  startDate  String   // YYYY-MM-DD
+  endDate    String?  // YYYY-MM-DD, exclusive of the first day in the next class
+  createdAt  DateTime @default(now())
+
+  student    Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  class      Class    @relation(fields: [classId], references: [id], onDelete: Cascade)
+
+  @@index([academyId])
+  @@index([studentId])
+}
+
+// Append-only record of every attendance change and correction.
+model AuditLog {
+  id            String   @id @default(cuid())
+  academyId     String
+  actorId       String
+  action        String   // e.g. "ATTENDANCE_CHANGED"
+  entityType    String   // e.g. "AttendanceRecord"
+  entityId      String
+  previousValue String?
+  newValue      String?
+  reason        String?
+  createdAt     DateTime @default(now())
+
+  @@index([academyId, createdAt])
+}
+
+// Weekly timetable: a class meets on a weekday between two times.
+model TimetableEntry {
+  id         String   @id @default(cuid())
+  academyId  String
+  classId    String
+  weekday    Int      // 0 = Sunday ... 6 = Saturday
+  startTime  String   // "HH:MM"
+  endTime    String   // "HH:MM"
+  createdAt  DateTime @default(now())
+
+  class      Class    @relation(fields: [classId], references: [id], onDelete: Cascade)
+
+  @@index([academyId])
+  @@index([classId])
+}
+
+// A class day that does not happen (holiday or cancelled). It is never counted as an absence.
+model CancelledDay {
+  id         String   @id @default(cuid())
+  academyId  String
+  classId    String
+  date       String   // "YYYY-MM-DD"
+  reason     String?
+  createdAt  DateTime @default(now())
+
+  class      Class    @relation(fields: [classId], references: [id], onDelete: Cascade)
+
+  @@unique([classId, date])
+  @@index([academyId])
+}
+
+// A subject taught in a class (e.g. Mathematics). Attendance is still recorded per class in this version.
+model Subject {
+  id         String   @id @default(cuid())
+  academyId  String
+  classId    String
+  name       String
+  createdAt  DateTime @default(now())
+
+  class      Class    @relation(fields: [classId], references: [id], onDelete: Cascade)
+
+  @@unique([classId, name])
+  @@index([academyId])
+}
+
+// An absence alert raised by a rule for one student. Only one ACTIVE alert per student+rule exists at a time.
+model AbsenceAlert {
+  id           String   @id @default(cuid())
+  academyId    String
+  studentId    String
+  classId      String
+  rule         String   // "CONSECUTIVE_ABSENCES" | "LOW_ATTENDANCE" | "ABSENCES_IN_30_DAYS"
+  detail       String   // human-readable reason, e.g. "3 consecutive absences"
+  status       String   @default("ACTIVE") // "ACTIVE" | "RESOLVED"
+  raisedAt     DateTime @default(now())
+  resolvedAt   DateTime?
+  resolvedById String?
+
+  student      Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  tasks        FollowUpTask[]
+
+  @@index([academyId, status])
+  @@index([studentId, rule, status])
+}
+
+// A follow-up action on an alert: who contacts the family, when, and what was learned.
+model FollowUpTask {
+  id          String   @id @default(cuid())
+  academyId   String
+  alertId     String
+  assignedToId String
+  dueDate     String   // YYYY-MM-DD
+  reason      String?  // absence reason if provided, e.g. "Sickness"
+  notes       String?
+  status      String   @default("OPEN") // "OPEN" | "DONE"
+  createdAt   DateTime @default(now())
+
+  alert       AbsenceAlert @relation(fields: [alertId], references: [id], onDelete: Cascade)
+
+  @@index([academyId, status])
+}
+
+// Failed sign-in attempts, used for rate limiting. Keyed by email (normalised) so it works without storing IPs.
+model LoginAttempt {
+  id        String   @id @default(cuid())
+  email     String
+  createdAt DateTime @default(now())
+
+  @@index([email, createdAt])
+}
+
+// A guardian login linked to one or more students. Access is read-only and only after the academy links them.
+model GuardianLink {
+  id         String   @id @default(cuid())
+  academyId  String
+  userId     String   // the GUARDIAN user
+  studentId  String
+  consentAt  DateTime? // set when the academy records guardian consent for notifications
+  createdAt  DateTime @default(now())
+
+  @@unique([userId, studentId])
+  @@index([academyId])
+}
+
+// A student asks for a past attendance mark to be corrected. An admin decides.
+model CorrectionRequest {
+  id              String   @id @default(cuid())
+  academyId       String
+  studentId       String
+  classId         String
+  date            String   // YYYY-MM-DD
+  requestedStatus String   // PRESENT | ABSENT | LATE | LEAVE
+  reason          String
+  requestedById   String
+  status          String   @default("PENDING") // PENDING | APPROVED | REJECTED
+  decidedById     String?
+  decidedAt       DateTime?
+  createdAt       DateTime @default(now())
+
+  @@index([academyId, status])
+}
+
+// In-app notification for one user.
+model Notification {
+  id         String   @id @default(cuid())
+  academyId  String
+  userId     String
+  title      String
+  body       String
+  link       String?
+  readAt     DateTime?
+  createdAt  DateTime @default(now())
+
+  @@index([userId, readAt])
+}
+
+// Contact or demo request from the public website.
+model Lead {
+  id           String   @id @default(cuid())
+  name         String
+  email        String
+  academyName  String?
+  message      String?
+  createdAt    DateTime @default(now())
+}
+
+// Privacy-conscious product analytics: event name and time only. No personal data, no IPs.
+model AnalyticsEvent {
+  id         String   @id @default(cuid())
+  name       String
+  academyId  String?
+  createdAt  DateTime @default(now())
+
+  @@index([name, createdAt])
+}
