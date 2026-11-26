@@ -1,11 +1,10 @@
 import { beforeAll, afterAll, describe, expect, it } from "vitest";
+import { setupTestDb } from "./test-db";
 import { execSync } from "node:child_process";
 import path from "node:path";
 import fs from "node:fs";
 
 // Use a SEPARATE test database so tests never touch dev data.
-const testDbPath = path.resolve(__dirname, "..", "prisma", "test.db");
-process.env.DATABASE_URL = `file:${testDbPath}`;
 process.env.SESSION_SECRET = process.env.SESSION_SECRET || "test-secret-test-secret-test-secret-123456";
 
 type Db = typeof import("@/lib/db").db;
@@ -32,12 +31,7 @@ type CurrentUserLike = {
 
 beforeAll(async () => {
   // Build a fresh test database from the schema.
-  if (fs.existsSync(testDbPath)) fs.rmSync(testDbPath);
-  execSync("npx prisma db push --skip-generate --accept-data-loss", {
-    cwd: path.resolve(__dirname, ".."),
-    env: { ...process.env, DATABASE_URL: `file:${testDbPath}` },
-    stdio: "ignore",
-  });
+    await setupTestDb();
 
   db = (await import("@/lib/db")).db;
   data = await import("@/lib/data");

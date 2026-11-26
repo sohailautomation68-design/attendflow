@@ -1,10 +1,9 @@
 import { beforeAll, describe, expect, it } from "vitest";
+import { setupTestDb } from "./test-db";
 import { execSync } from "node:child_process";
 import path from "node:path";
 import fs from "node:fs";
 
-const testDbPath = path.resolve(__dirname, "..", "prisma", "portal-test.db");
-process.env.DATABASE_URL = `file:${testDbPath}`;
 process.env.SESSION_SECRET = process.env.SESSION_SECRET || "test-secret-test-secret-test-secret-123456";
 
 type U = { id: string; academyId: string; academyName: string; name: string; email: string; role: any; studentId: string | null };
@@ -18,12 +17,7 @@ describe("student and guardian access", () => {
   const day = "2027-03-01";
 
   beforeAll(async () => {
-    if (fs.existsSync(testDbPath)) fs.rmSync(testDbPath);
-    execSync("npx prisma db push --skip-generate --accept-data-loss", {
-      cwd: path.resolve(__dirname, ".."),
-      env: { ...process.env, DATABASE_URL: `file:${testDbPath}` },
-      stdio: "ignore",
-    });
+    await setupTestDb();
     db = (await import("@/lib/db")).db;
     data = await import("@/lib/data");
 

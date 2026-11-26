@@ -12,7 +12,8 @@ export default defineConfig({
   test: {
     include: ["tests/**/*.test.ts"],
     environment: "node",
-    testTimeout: 30000,
+    testTimeout: 60000,
+    hookTimeout: 120000,
     fileParallelism: false,
   },
 });

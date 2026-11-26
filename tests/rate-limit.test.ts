@@ -1,10 +1,9 @@
 import { describe, expect, it, beforeAll } from "vitest";
+import { setupTestDb } from "./test-db";
 import { execSync } from "node:child_process";
 import path from "node:path";
 import fs from "node:fs";
 
-const testDbPath = path.resolve(__dirname, "..", "prisma", "ratelimit-test.db");
-process.env.DATABASE_URL = `file:${testDbPath}`;
 
 describe("login rate limiting", () => {
   let isLoginBlocked: typeof import("@/lib/rate-limit").isLoginBlocked;
@@ -13,12 +12,7 @@ describe("login rate limiting", () => {
   let LOGIN_MAX_FAILURES: number;
 
   beforeAll(async () => {
-    if (fs.existsSync(testDbPath)) fs.rmSync(testDbPath);
-    execSync("npx prisma db push --skip-generate --accept-data-loss", {
-      cwd: path.resolve(__dirname, ".."),
-      env: { ...process.env, DATABASE_URL: `file:${testDbPath}` },
-      stdio: "ignore",
-    });
+    await setupTestDb();
     const m = await import("@/lib/rate-limit");
     ({ isLoginBlocked, recordFailedLogin, clearFailedLogins, LOGIN_MAX_FAILURES } = m);
   });
